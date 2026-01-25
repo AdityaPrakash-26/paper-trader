@@ -33,4 +33,4 @@ export type Snapshot = {
   timestamp: string;
 };
 
-export type RangeFilter = "1W" | "1M" | "6M" | "YTD" | "1Y" | "MAX";
+export type RangeFilter = "1D" | "1W" | "1M" | "6M" | "YTD" | "1Y" | "MAX";

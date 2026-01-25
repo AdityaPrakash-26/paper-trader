@@ -17,18 +17,20 @@ type SearchResult = {
   type?: string;
 };
 
-const defaultSymbols = [
-  "AAPL",
-  "MSFT",
-  "NVDA",
-  "TSLA",
-  "AMZN",
-  "META",
-  "GOOGL",
-  "JPM",
-  "V",
-  "NFLX",
-];
+const popularStockNames: Record<string, string> = {
+  AAPL: "Apple Inc.",
+  MSFT: "Microsoft Corporation",
+  NVDA: "NVIDIA Corporation",
+  TSLA: "Tesla, Inc.",
+  AMZN: "Amazon.com, Inc.",
+  META: "Meta Platforms, Inc.",
+  GOOGL: "Alphabet Inc.",
+  JPM: "JPMorgan Chase & Co.",
+  V: "Visa Inc.",
+  NFLX: "Netflix, Inc.",
+};
+
+const defaultSymbols = Object.keys(popularStockNames);
 
 export default function PopularStocks() {
   const symbols = useMemo(() => defaultSymbols, []);
@@ -140,9 +142,6 @@ export default function PopularStocks() {
             className="w-full rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none"
           />
         </div>
-        <span className="text-xs text-slate-500">
-          {query.trim().length >= 2 ? "Search results" : "Top movers"}
-        </span>
       </div>
 
       <div className="mt-5">
@@ -200,6 +199,7 @@ export default function PopularStocks() {
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {quotes.map((quote) => {
+              const stockName = popularStockNames[quote.symbol] || "Tap to view details";
               const tone = quote.percentChange >= 0 ? "text-emerald-600" : "text-red-600";
               return (
                 <Link
@@ -218,9 +218,7 @@ export default function PopularStocks() {
                   <p className="mt-3 text-lg font-semibold text-slate-900 font-mono">
                     {formatCurrency(quote.current)}
                   </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    View history & fundamentals
-                  </p>
+                  <p className="mt-1 text-xs text-slate-500">{stockName}</p>
                 </Link>
               );
             })}

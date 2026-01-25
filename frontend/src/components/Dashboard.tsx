@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { apiFetch } from "@/lib/api";
 import type { Holding, PortfolioSummary, RangeFilter, Snapshot, Trade } from "@/lib/types";
@@ -8,8 +8,8 @@ import NetWorthCard from "@/components/NetWorthCard";
 import NetWorthChart from "@/components/NetWorthChart";
 import HoldingsTable from "@/components/HoldingsTable";
 import TradeHistory from "@/components/TradeHistory";
-import AccountCard from "@/components/AccountCard";
 import PopularStocks from "@/components/PopularStocks";
+import Navbar from "@/components/Navbar";
 
 const ranges: RangeFilter[] = ["1W", "1M", "6M", "YTD", "1Y", "MAX"];
 
@@ -95,11 +95,10 @@ export default function Dashboard({ session }: { session: Session }) {
     });
   }, [loadSnapshots, range]);
 
-  const userEmail = useMemo(() => session.user.email ?? "", [session.user.email]);
-
   return (
     <div className="flex-1 px-6 py-10">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
+        <Navbar session={session} />
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
@@ -136,7 +135,6 @@ export default function Dashboard({ session }: { session: Session }) {
             <div className="glass-panel rounded-3xl p-6">
               <TradeHistory trades={trades} />
             </div>
-            <AccountCard email={userEmail} />
           </div>
         </section>
 

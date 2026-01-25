@@ -17,10 +17,63 @@ import { supabase } from "@/lib/supabaseClient";
 import { apiFetch } from "@/lib/api";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import type { Holding, RangeFilter } from "@/lib/types";
+import Navbar from "@/components/Navbar";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
-const ranges: RangeFilter[] = ["1W", "1M", "6M", "YTD", "1Y", "MAX"];
+const ranges: RangeFilter[] = ["1D", "1W", "1M", "6M", "YTD", "1Y", "MAX"];
+const MARKET_OPEN_MINUTES = 9 * 60 + 30;
+const MARKET_CLOSE_MINUTES = 16 * 60;
+const POINTS_BY_RANGE: Record<RangeFilter, number | null> = {
+  "1D": null, // intraday points
+  "1W": 7,
+  "1M": 30,
+  "6M": 180,
+  "YTD": 366,
+  "1Y": 365,
+  "MAX": 1825, // ~5 years of daily points
+};
+type Grouping = "intraday" | "day" | "week" | "month" | "quarter";
+
+const getEasternTimeParts = () => {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const parts = formatter.formatToParts(new Date()).reduce<Record<string, string>>(
+    (acc, part) => {
+      acc[part.type] = part.value;
+      return acc;
+    },
+    {}
+  );
+
+  return parts;
+};
+
+const isMarketOpenNow = () => {
+  const parts = getEasternTimeParts();
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
+
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  const dayOfWeek = date.getUTCDay(); // 0 = Sunday
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return false;
+  }
+
+  const minutes = hour * 60 + minute;
+  return minutes >= MARKET_OPEN_MINUTES && minutes < MARKET_CLOSE_MINUTES;
+};
 
 type Quote = {
   symbol: string;
@@ -126,11 +179,100 @@ const formatLargeNumber = (value: number) => {
   return formatNumber(value);
 };
 
+const getGroupingForRange = (range: RangeFilter): Grouping => {
+  switch (range) {
+    case "1D":
+      return "intraday";
+    case "1W":
+    case "1M":
+      return "day";
+    case "6M":
+    case "YTD":
+      return "week";
+    case "1Y":
+      return "month";
+    case "MAX":
+    default:
+      return "quarter";
+  }
+};
+
+const startOfUTCWeek = (date: Date) => {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay();
+  const diff = (day + 6) % 7; // Monday as start
+  d.setUTCDate(d.getUTCDate() - diff);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
+
+const startOfUTCMonth = (date: Date) =>
+  Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+
+const startOfUTCQuarter = (date: Date) => {
+  const month = date.getUTCMonth();
+  const quarterStartMonth = Math.floor(month / 3) * 3;
+  return Date.UTC(date.getUTCFullYear(), quarterStartMonth, 1);
+};
+
+const bucketTimestamp = (timestamp: number, grouping: Grouping) => {
+  const date = new Date(timestamp);
+  switch (grouping) {
+    case "day":
+      return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    case "week":
+      return startOfUTCWeek(date);
+    case "month":
+      return startOfUTCMonth(date);
+    case "quarter":
+      return startOfUTCQuarter(date);
+    case "intraday":
+    default:
+      return timestamp;
+  }
+};
+
+const formatBucketLabel = (timestamp: number, grouping: Grouping) => {
+  const date = new Date(timestamp);
+  switch (grouping) {
+    case "intraday":
+      return date.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: "America/New_York",
+      });
+    case "day":
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+    case "week":
+      return `Week of ${date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      })}`;
+    case "month":
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        year: "numeric",
+      });
+    case "quarter": {
+      const quarter = Math.floor(date.getUTCMonth() / 3) + 1;
+      return `Q${quarter} ${date.getUTCFullYear()}`;
+    }
+    default:
+      return date.toDateString();
+  }
+};
+
 const toEpochRange = (range: RangeFilter) => {
   const now = new Date();
   let fromDate = new Date(now);
 
   switch (range) {
+    case "1D":
+      fromDate.setDate(now.getDate() - 3);
+      break;
     case "1W":
       fromDate.setDate(now.getDate() - 7);
       break;
@@ -175,7 +317,7 @@ export default function StockDetailPage() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [candles, setCandles] = useState<Candles | null>(null);
   const [candlesError, setCandlesError] = useState<string | null>(null);
-  const [range, setRange] = useState<RangeFilter>("6M");
+  const [range, setRange] = useState<RangeFilter>("1D");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
@@ -187,6 +329,7 @@ export default function StockDetailPage() {
   const [ownedShares, setOwnedShares] = useState<number | null>(null);
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [marketOpen, setMarketOpen] = useState<boolean>(false);
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<EventSource | null>(null);
 
@@ -209,6 +352,15 @@ export default function StockDetailPage() {
       mounted = false;
       authListener.subscription.unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    const updateMarketStatus = () => {
+      setMarketOpen(isMarketOpenNow());
+    };
+    updateMarketStatus();
+    const timer = setInterval(updateMarketStatus, 60000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -235,8 +387,9 @@ export default function StockDetailPage() {
       // Fetch candles (using Twelve Data free API)
       try {
         const { from, to } = toEpochRange(range);
+        const resolution = range === "1D" ? "5" : "D";
         const candleData = await apiFetch<Candles>(
-          `/api/market/candles?symbol=${symbol}&resolution=D&from=${from}&to=${to}`
+          `/api/market/candles?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}`
         );
         if (candleData.status === "ok") {
           setCandles(candleData);
@@ -320,9 +473,16 @@ export default function StockDetailPage() {
 
   // WebSocket/SSE for real-time price updates
   useEffect(() => {
-    if (!symbol) return;
+    if (!symbol || !marketOpen) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+      return;
+    }
 
-    // Connect to the backend SSE stream for real-time prices
+    // Connect to the backend SSE stream for real-time prices during market hours
     const streamUrl = `${API_BASE}/api/market/stream?symbol=${symbol}`;
     
     try {
@@ -362,11 +522,11 @@ export default function StockDetailPage() {
       // SSE not supported or failed, will use polling
       setWsConnected(false);
     }
-  }, [symbol]);
+  }, [symbol, marketOpen]);
 
   // Polling fallback for price updates when WebSocket isn't connected
   useEffect(() => {
-    if (!symbol || wsConnected) return;
+    if (!symbol || wsConnected || !marketOpen) return;
 
     const pollPrice = async () => {
       try {
@@ -379,17 +539,58 @@ export default function StockDetailPage() {
 
     const interval = setInterval(pollPrice, 15000); // Poll every 15 seconds
     return () => clearInterval(interval);
-  }, [symbol, wsConnected]);
+  }, [symbol, wsConnected, marketOpen]);
 
   const chartData = useMemo(() => {
     if (!candles || candles.status !== "ok") {
       return [];
     }
-    return candles.timestamps.map((timestamp, index) => ({
-      timestamp,
+
+    const grouping = getGroupingForRange(range);
+    const rawPoints = candles.timestamps.map((timestamp, index) => ({
+      timestamp: timestamp * 1000,
       close: candles.close[index],
     }));
-  }, [candles]);
+
+    if (rawPoints.length === 0) {
+      return [];
+    }
+
+    // Ensure data is sorted
+    rawPoints.sort((a, b) => a.timestamp - b.timestamp);
+
+    if (grouping === "intraday") {
+      const lastPoint = rawPoints[rawPoints.length - 1];
+      const lastDateKey = new Date(lastPoint.timestamp).toISOString().slice(0, 10);
+      return rawPoints.filter(
+        (point) => new Date(point.timestamp).toISOString().slice(0, 10) === lastDateKey
+      );
+    }
+
+    const buckets = new Map<number, { timestamp: number; close: number }>();
+    rawPoints.forEach((point) => {
+      const bucket = bucketTimestamp(point.timestamp, grouping);
+      const existing = buckets.get(bucket);
+      if (!existing || point.timestamp > existing.timestamp) {
+        buckets.set(bucket, { timestamp: bucket, close: point.close });
+      }
+    });
+
+    const groupedPoints = Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
+    const limit = POINTS_BY_RANGE[range];
+    const sliced = limit ? groupedPoints.slice(-limit) : groupedPoints;
+    return sliced;
+  }, [candles, range]);
+
+  const yDomain = useMemo(() => {
+    if (!chartData.length) return undefined;
+    const prices = chartData.map((point) => point.close);
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const span = Math.max(max - min, Math.abs(max) * 0.01 || 1);
+    const pad = span * 0.05;
+    return [min - pad, max + pad];
+  }, [chartData]);
 
   const metricItems = useMemo(() => {
     const toNumber = (value: unknown) => {
@@ -489,14 +690,13 @@ export default function StockDetailPage() {
   }, [fundamentals, metrics, symbol]);
 
   useEffect(() => {
-    if (side === "SELL" && amountType === "DOLLARS") {
-      setAmountType("SHARES");
-    }
   }, [amountType, side]);
 
-  // Use live price if available, otherwise fall back to quote price
-  const currentPrice = livePrice ?? quote?.current ?? 0;
-  const effectiveAmountType = side === "SELL" ? "SHARES" : amountType;
+  // Use live price if market is open; otherwise show most recent close
+  const currentPrice =
+    (marketOpen ? livePrice ?? quote?.current ?? quote?.prevClose : quote?.prevClose ?? quote?.current) ?? 0;
+  const effectiveAmountType = amountType;
+  const showLive = marketOpen && wsConnected;
   
   // Calculate estimated shares and cost based on input
   const { estimatedShares, estimatedCost } = useMemo(() => {
@@ -561,6 +761,19 @@ export default function StockDetailPage() {
     insufficientBuyingPower && projectedBuyingPower !== null
       ? Math.abs(projectedBuyingPower)
       : 0;
+  const rangeChangeData = useMemo(() => {
+    if (!chartData.length) {
+      return { change: null, percent: null };
+    }
+    const start = chartData[0]?.close ?? null;
+    const end = currentPrice || chartData[chartData.length - 1]?.close || null;
+    if (!start || !end || start <= 0) {
+      return { change: null, percent: null };
+    }
+    const change = end - start;
+    const percent = (change / start) * 100;
+    return { change, percent };
+  }, [chartData, currentPrice]);
 
   const handleTrade = async () => {
     if (!symbol) {
@@ -612,11 +825,13 @@ export default function StockDetailPage() {
     }
   };
 
-  const changeTone = (quote?.change ?? 0) >= 0 ? "text-emerald-600" : "text-red-600";
+  const changeTone =
+    (rangeChangeData.change ?? quote?.change ?? 0) >= 0 ? "text-emerald-600" : "text-red-600";
 
   return (
     <div className="flex-1 px-6 py-10">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
+        <Navbar session={session} />
         <div className="flex flex-wrap items-center justify-between gap-4">
           <Link
             href="/"
@@ -624,7 +839,6 @@ export default function StockDetailPage() {
           >
             {"< Back to portfolio"}
           </Link>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Market</p>
         </div>
 
         {error ? (
@@ -654,10 +868,15 @@ export default function StockDetailPage() {
                   <div>
                     <p className="text-xs uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
                       {symbol}
-                      {wsConnected && (
+                      {showLive && (
                         <span className="flex items-center gap-1 text-emerald-600 text-[10px]">
                           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                           LIVE
+                        </span>
+                      )}
+                      {!showLive && !marketOpen && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+                          Market closed
                         </span>
                       )}
                     </p>
@@ -667,10 +886,17 @@ export default function StockDetailPage() {
                     <p className={`mt-2 text-sm font-mono ${changeTone}`}>
                       {loading
                         ? "--"
+                        : rangeChangeData.change !== null && rangeChangeData.percent !== null
+                        ? `${formatCurrency(rangeChangeData.change)} (${formatPercent(
+                            rangeChangeData.percent
+                          )}) over selected range`
                         : `${formatCurrency(quote?.change ?? 0)} (${formatPercent(
                             quote?.percentChange ?? 0
                           )})`}
                     </p>
+                    {!marketOpen && (
+                      <p className="mt-1 text-xs text-slate-500">As of last close</p>
+                    )}
                     {fundamentals?.name ? (
                       <p className="mt-1 text-sm text-slate-500">
                         {fundamentals.name}
@@ -740,15 +966,11 @@ export default function StockDetailPage() {
                       </defs>
                       <XAxis
                         dataKey="timestamp"
-                        tickFormatter={(value) =>
-                          new Date(value * 1000).toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                          })
-                        }
+                        tickFormatter={(value) => formatBucketLabel(value, getGroupingForRange(range))}
                         tick={{ fill: "#64748b", fontSize: 12 }}
                         axisLine={false}
                         tickLine={false}
+                        minTickGap={10}
                       />
                       <YAxis
                         tickFormatter={(value) => formatCurrency(value)}
@@ -756,16 +978,19 @@ export default function StockDetailPage() {
                         axisLine={false}
                         tickLine={false}
                         width={80}
+                        domain={yDomain || ["auto", "auto"]}
                       />
                       <Tooltip
                         content={({ active, payload }) => {
                           if (!active || !payload || payload.length === 0) {
                             return null;
                           }
-                          const value = payload[0].value as number;
+                          const point = payload[0].payload as { timestamp: number; close: number };
+                          const label = formatBucketLabel(point.timestamp, getGroupingForRange(range));
                           return (
                             <div className="rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-700">
-                              {formatCurrency(value)}
+                              <p className="font-semibold">{formatCurrency(point.close)}</p>
+                              <p className="mt-1 text-[11px] text-slate-500">{label}</p>
                             </div>
                           );
                         }}
@@ -831,9 +1056,15 @@ export default function StockDetailPage() {
                     Place a market order for {symbol}.
                   </p>
                 </div>
-                <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white">
-                  Live
-                </span>
+                {showLive ? (
+                  <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white">
+                    Live
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600">
+                    Market closed
+                  </span>
+                )}
               </div>
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -914,7 +1145,6 @@ export default function StockDetailPage() {
                 ))}
               </div>
 
-              {side === "BUY" ? (
                 <div className="mt-3 flex gap-2">
                   {(["SHARES", "DOLLARS"] as const).map((item) => (
                     <button
@@ -934,12 +1164,11 @@ export default function StockDetailPage() {
                     </button>
                   ))}
                 </div>
-              ) : null}
 
               <label className="mt-4 block text-xs uppercase tracking-[0.2em] text-slate-500">
                 {effectiveAmountType === "DOLLARS"
                   ? "Amount in dollars"
-                  : "Shares (fractional allowed)"}
+                  : "Shares"}
                 <input
                   type="number"
                   min="0"
@@ -959,23 +1188,21 @@ export default function StockDetailPage() {
               </label>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {(side === "BUY" && effectiveAmountType === "DOLLARS" ? dollarShortcuts : shareShortcuts).map(
-                  (value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => {
-                        setQuantity(value.toString());
-                        setTradeStatus(null);
-                      }}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-teal-600 hover:text-teal-700"
-                    >
-                      {effectiveAmountType === "DOLLARS"
-                        ? formatCurrency(value)
-                        : `${value} ${value === 1 ? "share" : "shares"}`}
-                    </button>
-                  )
-                )}
+                {(effectiveAmountType === "DOLLARS" ? dollarShortcuts : shareShortcuts).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => {
+                      setQuantity(value.toString());
+                      setTradeStatus(null);
+                    }}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-teal-600 hover:text-teal-700"
+                  >
+                    {effectiveAmountType === "DOLLARS"
+                      ? formatCurrency(value)
+                      : `${value} ${value === 1 ? "share" : "shares"}`}
+                  </button>
+                ))}
               </div>
 
               <div className="mt-3 rounded-2xl border border-slate-200 bg-white/70 px-3 py-3 text-xs text-slate-600">
