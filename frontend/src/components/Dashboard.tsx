@@ -107,9 +107,6 @@ export default function Dashboard({ session }: { session: Session }) {
             </p>
             <h1 className="text-3xl font-semibold text-slate-900">Portfolio</h1>
           </div>
-          <span className="rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-xs font-semibold text-slate-600">
-            Simulated account
-          </span>
         </div>
 
         {error ? (

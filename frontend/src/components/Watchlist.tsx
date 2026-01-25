@@ -72,7 +72,7 @@ export default function Watchlist({ token }: WatchlistProps) {
         return [data.item, ...prev];
       });
       if (data.quote) {
-        setQuotes((prev) => ({ ...prev, [data.quote.symbol]: data.quote }));
+        setQuotes((prev) => ({ ...prev, [data.quote!.symbol]: data.quote! }));
       }
       setSymbolInput("");
     } catch (err) {
@@ -130,7 +130,7 @@ export default function Watchlist({ token }: WatchlistProps) {
       </div>
 
       <form onSubmit={handleSubmit} className="mt-4 flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[180px]">
+        <div className="flex-1 min-w-45">
           <label className="sr-only" htmlFor="watchlist-symbol">
             Add ticker
           </label>
