@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -16,7 +16,7 @@ import {
 import { supabase } from "@/lib/supabaseClient";
 import { apiFetch } from "@/lib/api";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
-import type { RangeFilter } from "@/lib/types";
+import type { Holding, RangeFilter } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -105,6 +105,11 @@ type Metrics = {
   twoHundredDayMA?: number;
 };
 
+type TradeStatus = {
+  tone: "success" | "error" | "info";
+  message: string;
+};
+
 const formatLargeNumber = (value: number) => {
   if (!Number.isFinite(value)) {
     return "--";
@@ -176,8 +181,12 @@ export default function StockDetailPage() {
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [amountType, setAmountType] = useState<"SHARES" | "DOLLARS">("SHARES");
   const [quantity, setQuantity] = useState("");
-  const [tradeStatus, setTradeStatus] = useState<string | null>(null);
+  const [tradeStatus, setTradeStatus] = useState<TradeStatus | null>(null);
   const [tradeSubmitting, setTradeSubmitting] = useState(false);
+  const [buyingPower, setBuyingPower] = useState<number | null>(null);
+  const [ownedShares, setOwnedShares] = useState<number | null>(null);
+  const [accountLoading, setAccountLoading] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<EventSource | null>(null);
 
@@ -274,6 +283,40 @@ export default function StockDetailPage() {
 
     loadData();
   }, [range, symbol]);
+
+  const loadAccountState = useCallback(async () => {
+    if (!session?.access_token || !symbol) {
+      setBuyingPower(null);
+      setOwnedShares(null);
+      return;
+    }
+
+    setAccountLoading(true);
+    setAccountError(null);
+    try {
+      const data = await apiFetch<{
+        cashBalance: number;
+        holdingsValue: number;
+        netWorth: number;
+        dailyChange: number;
+        dailyChangePercent: number;
+        asOf: string;
+        holdings: Holding[];
+      }>("/api/portfolio/summary", { token: session.access_token });
+
+      setBuyingPower(data.cashBalance);
+      const holding = (data.holdings || []).find((item) => item.symbol === symbol);
+      setOwnedShares(holding ? holding.shares : 0);
+    } catch (err) {
+      setAccountError(err instanceof Error ? err.message : "Unable to load buying power.");
+    } finally {
+      setAccountLoading(false);
+    }
+  }, [session?.access_token, symbol]);
+
+  useEffect(() => {
+    loadAccountState();
+  }, [loadAccountState]);
 
   // WebSocket/SSE for real-time price updates
   useEffect(() => {
@@ -468,21 +511,76 @@ export default function StockDetailPage() {
     }
   }, [quantity, currentPrice, effectiveAmountType]);
 
+  const projectedBuyingPower = useMemo(() => {
+    if (buyingPower === null) {
+      return null;
+    }
+    if (!Number.isFinite(estimatedCost) || estimatedCost <= 0) {
+      return buyingPower;
+    }
+    return side === "BUY" ? buyingPower - estimatedCost : buyingPower + estimatedCost;
+  }, [buyingPower, estimatedCost, side]);
+
+  const insufficientBuyingPower =
+    side === "BUY" &&
+    buyingPower !== null &&
+    Number.isFinite(estimatedCost) &&
+    estimatedCost > 0 &&
+    estimatedCost > buyingPower;
+
+  const orderDisabled =
+    tradeSubmitting ||
+    !currentPrice ||
+    !Number.isFinite(estimatedShares) ||
+    estimatedShares <= 0 ||
+    (side === "BUY" && insufficientBuyingPower);
+
+  const orderCta = !session
+    ? "Sign in to trade"
+    : tradeSubmitting
+    ? "Submitting..."
+    : side === "BUY"
+    ? "Buy now"
+    : "Sell now";
+
+  const dollarShortcuts = useMemo(() => {
+    if (!buyingPower || buyingPower <= 0) {
+      return [50, 100, 250];
+    }
+    const choices = [
+      Math.max(10, Math.round(buyingPower * 0.1)),
+      Math.max(25, Math.round(buyingPower * 0.25)),
+      Math.round(buyingPower),
+    ];
+    return Array.from(new Set(choices));
+  }, [buyingPower]);
+
+  const shareShortcuts = [1, 5, 10];
+  const positionValue = ownedShares !== null && currentPrice ? ownedShares * currentPrice : null;
+  const buyingPowerDeficit =
+    insufficientBuyingPower && projectedBuyingPower !== null
+      ? Math.abs(projectedBuyingPower)
+      : 0;
+
   const handleTrade = async () => {
     if (!symbol) {
       return;
     }
     if (!session?.access_token) {
-      setTradeStatus("Sign in to place trades.");
+      setTradeStatus({ tone: "error", message: "Sign in to place trades." });
       return;
     }
 
     if (!Number.isFinite(estimatedShares) || estimatedShares <= 0) {
-      setTradeStatus("Enter a valid order size.");
+      setTradeStatus({ tone: "error", message: "Enter a valid order size." });
       return;
     }
     if (!currentPrice || currentPrice <= 0) {
-      setTradeStatus("Price unavailable. Try again shortly.");
+      setTradeStatus({ tone: "error", message: "Price unavailable. Try again shortly." });
+      return;
+    }
+    if (insufficientBuyingPower) {
+      setTradeStatus({ tone: "error", message: "Order exceeds available buying power." });
       return;
     }
 
@@ -498,9 +596,17 @@ export default function StockDetailPage() {
           quantity: estimatedShares,
         },
       });
-      setTradeStatus("Order executed.");
+      setTradeStatus({
+        tone: "success",
+        message: side === "BUY" ? "Buy order executed." : "Sell order executed.",
+      });
+      setQuantity("");
+      await loadAccountState();
     } catch (err) {
-      setTradeStatus(err instanceof Error ? err.message : "Trade failed.");
+      setTradeStatus({
+        tone: "error",
+        message: err instanceof Error ? err.message : "Trade failed.",
+      });
     } finally {
       setTradeSubmitting(false);
     }
@@ -716,19 +822,85 @@ export default function StockDetailPage() {
 
           <div className="flex flex-col gap-6">
             <div className="glass-panel rounded-3xl p-6">
-              <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-                Order Ticket
-              </p>
-              <p className="mt-2 text-sm text-slate-500">
-                Place a market order for {symbol}.
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
+                    Order Ticket
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    Place a market order for {symbol}.
+                  </p>
+                </div>
+                <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white">
+                  Live
+                </span>
+              </div>
 
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                      Buying power
+                    </p>
+                    {session ? (
+                      <button
+                        type="button"
+                        onClick={loadAccountState}
+                        disabled={accountLoading}
+                        className="text-[10px] font-semibold uppercase tracking-[0.1em] text-teal-700 hover:text-teal-800 disabled:cursor-not-allowed disabled:text-slate-400"
+                      >
+                        {accountLoading ? "Refreshing..." : "Refresh"}
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 text-xl font-semibold text-slate-900 font-mono">
+                    {session
+                      ? accountLoading
+                        ? "Loading..."
+                        : formatCurrency(buyingPower ?? 0)
+                      : "Sign in to view"}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Cash available for immediate buys.
+                  </p>
+                  {accountError ? (
+                    <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                      {accountError}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                    Position
+                  </p>
+                  <p className="mt-2 text-xl font-semibold text-slate-900 font-mono">
+                    {ownedShares !== null ? `${formatNumber(ownedShares)} shares` : "--"}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Value:{" "}
+                    <span className="font-mono text-slate-900">
+                      {positionValue !== null ? formatCurrency(positionValue) : "--"}
+                    </span>
+                  </p>
+                  <p className="mt-2 text-[11px] uppercase tracking-[0.2em] text-slate-500">
+                    Live price:{" "}
+                    <span className="font-mono text-slate-900">
+                      {currentPrice ? formatCurrency(currentPrice) : "Loading..."}
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-5 flex gap-2">
                 {["BUY", "SELL"].map((item) => (
                   <button
                     key={item}
                     type="button"
-                    onClick={() => setSide(item as "BUY" | "SELL")}
+                    onClick={() => {
+                      setSide(item as "BUY" | "SELL");
+                      setTradeStatus(null);
+                    }}
                     className={`flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition ${
                       side === item
                         ? item === "BUY"
@@ -748,7 +920,10 @@ export default function StockDetailPage() {
                     <button
                       key={item}
                       type="button"
-                      onClick={() => setAmountType(item)}
+                      onClick={() => {
+                        setAmountType(item);
+                        setTradeStatus(null);
+                      }}
                       className={`flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition ${
                         amountType === item
                           ? "bg-slate-900 text-white"
@@ -769,16 +944,44 @@ export default function StockDetailPage() {
                   type="number"
                   min="0"
                   step={effectiveAmountType === "DOLLARS" ? "0.01" : "0.0001"}
+                  max={
+                    side === "BUY" && effectiveAmountType === "DOLLARS" && buyingPower !== null
+                      ? buyingPower
+                      : undefined
+                  }
                   value={quantity}
-                  onChange={(event) => setQuantity(event.target.value)}
+                  onChange={(event) => {
+                    setQuantity(event.target.value);
+                    setTradeStatus(null);
+                  }}
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none"
                 />
               </label>
 
-              <div className="mt-3 rounded-2xl border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-600">
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(side === "BUY" && effectiveAmountType === "DOLLARS" ? dollarShortcuts : shareShortcuts).map(
+                  (value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => {
+                        setQuantity(value.toString());
+                        setTradeStatus(null);
+                      }}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-teal-600 hover:text-teal-700"
+                    >
+                      {effectiveAmountType === "DOLLARS"
+                        ? formatCurrency(value)
+                        : `${value} ${value === 1 ? "share" : "shares"}`}
+                    </button>
+                  )
+                )}
+              </div>
+
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-white/70 px-3 py-3 text-xs text-slate-600">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span>
-                    {side === "SELL" ? "Est. proceeds:" : "Est. cost:"}{" "}
+                    {side === "SELL" ? "Est. proceeds:" : "Order total:"}{" "}
                     <span className="font-mono text-slate-900">
                       {currentPrice ? formatCurrency(estimatedCost) : "--"}
                     </span>
@@ -790,20 +993,58 @@ export default function StockDetailPage() {
                     </span>
                   </span>
                 </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <span>Buying power after trade</span>
+                  <span
+                    className={`font-mono ${
+                      projectedBuyingPower !== null && projectedBuyingPower < 0
+                        ? "text-red-600"
+                        : "text-slate-900"
+                    }`}
+                  >
+                    {projectedBuyingPower !== null
+                      ? formatCurrency(projectedBuyingPower)
+                      : buyingPower !== null
+                      ? formatCurrency(buyingPower)
+                      : "--"}
+                  </span>
+                </div>
+                {insufficientBuyingPower ? (
+                  <p className="mt-2 text-[11px] text-red-600">
+                    Exceeds buying power by {formatCurrency(buyingPowerDeficit)}
+                  </p>
+                ) : null}
               </div>
 
               {tradeStatus ? (
-                <p className="mt-3 text-xs text-slate-500">{tradeStatus}</p>
+                <div
+                  className={`mt-3 rounded-xl border px-3 py-2 text-xs ${
+                    tradeStatus.tone === "success"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : tradeStatus.tone === "error"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : "border-slate-200 bg-slate-50 text-slate-600"
+                  }`}
+                >
+                  {tradeStatus.message}
+                </div>
               ) : null}
 
               <button
                 type="button"
                 onClick={handleTrade}
-                disabled={tradeSubmitting}
-                className="mt-4 w-full rounded-xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={orderDisabled}
+                className={`mt-4 w-full rounded-xl px-3 py-3 text-sm font-semibold text-white transition ${
+                  side === "BUY"
+                    ? "bg-emerald-600 hover:bg-emerald-500"
+                    : "bg-red-600 hover:bg-red-500"
+                } disabled:cursor-not-allowed disabled:opacity-60`}
               >
-                {tradeSubmitting ? "Submitting..." : "Place order"}
+                {orderCta}
               </button>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Orders execute against the latest market price; fractional shares supported.
+              </p>
             </div>
 
             <div className="glass-panel rounded-3xl p-6">
