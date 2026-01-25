@@ -1,0 +1,22 @@
+# Node
+node_modules
+npm-debug.log*
+
+# Next
+/frontend/.next
+/frontend/out
+
+# Env
+.env
+.env.local
+.env.*.local
+/frontend/.env
+/backend/.env
+
+# Logs
+logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
