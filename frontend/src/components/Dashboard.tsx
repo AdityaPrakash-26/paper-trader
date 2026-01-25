@@ -10,6 +10,7 @@ import HoldingsTable from "@/components/HoldingsTable";
 import TradeHistory from "@/components/TradeHistory";
 import PopularStocks from "@/components/PopularStocks";
 import Navbar from "@/components/Navbar";
+import Watchlist from "@/components/Watchlist";
 
 const ranges: RangeFilter[] = ["1W", "1M", "6M", "YTD", "1Y", "MAX"];
 
@@ -138,7 +139,10 @@ export default function Dashboard({ session }: { session: Session }) {
           </div>
         </section>
 
-        <PopularStocks />
+        <PopularStocks token={token} />
+        <div className="glass-panel rounded-3xl p-6">
+          <Watchlist token={token} />
+        </div>
       </div>
     </div>
   );

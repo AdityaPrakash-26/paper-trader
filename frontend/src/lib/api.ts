@@ -28,5 +28,11 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
     throw new Error(message);
   }
 
+  // Handle empty bodies (e.g., 204 No Content)
+  const contentLength = response.headers.get("content-length");
+  if (response.status === 204 || contentLength === "0") {
+    return {} as T;
+  }
+
   return response.json();
 }

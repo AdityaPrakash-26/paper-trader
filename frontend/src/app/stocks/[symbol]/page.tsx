@@ -163,6 +163,23 @@ type TradeStatus = {
   message: string;
 };
 
+const StarIcon = ({ filled = false }: { filled?: boolean }) => (
+  <svg
+    aria-hidden
+    className="h-4 w-4"
+    viewBox="0 0 24 24"
+    fill={filled ? "currentColor" : "none"}
+    stroke="currentColor"
+    strokeWidth="1.5"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="m12 3 2.45 4.96 5.47.78-3.96 3.86.93 5.44L12 15.98 6.11 18.04l.93-5.44-3.96-3.86 5.47-.78Z"
+    />
+  </svg>
+);
+
 const formatLargeNumber = (value: number) => {
   if (!Number.isFinite(value)) {
     return "--";
@@ -331,6 +348,10 @@ export default function StockDetailPage() {
   const [accountError, setAccountError] = useState<string | null>(null);
   const [marketOpen, setMarketOpen] = useState<boolean>(false);
   const [wsConnected, setWsConnected] = useState(false);
+  const [watchlisted, setWatchlisted] = useState(false);
+  const [watchlistChecking, setWatchlistChecking] = useState(false);
+  const [watchlistUpdating, setWatchlistUpdating] = useState(false);
+  const [watchlistError, setWatchlistError] = useState<string | null>(null);
   const wsRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -470,6 +491,34 @@ export default function StockDetailPage() {
   useEffect(() => {
     loadAccountState();
   }, [loadAccountState]);
+
+  const loadWatchlistState = useCallback(async () => {
+    if (!session?.access_token || !symbol) {
+      setWatchlisted(false);
+      setWatchlistError(null);
+      setWatchlistChecking(false);
+      return;
+    }
+
+    setWatchlistChecking(true);
+    setWatchlistError(null);
+    try {
+      const data = await apiFetch<{ items: { symbol: string }[] }>(
+        "/api/watchlist?includeQuotes=false",
+        { token: session.access_token }
+      );
+      const exists = (data.items || []).some((item) => item.symbol === symbol);
+      setWatchlisted(Boolean(exists));
+    } catch (err) {
+      setWatchlistError(err instanceof Error ? err.message : "Unable to load watchlist.");
+    } finally {
+      setWatchlistChecking(false);
+    }
+  }, [session?.access_token, symbol]);
+
+  useEffect(() => {
+    loadWatchlistState();
+  }, [loadWatchlistState]);
 
   // WebSocket/SSE for real-time price updates
   useEffect(() => {
@@ -775,6 +824,63 @@ export default function StockDetailPage() {
     return { change, percent };
   }, [chartData, currentPrice]);
 
+  const rangeStats = useMemo(() => {
+    if (chartData.length) {
+      const closes = chartData.map((point) => point.close);
+      return {
+        low: Math.min(...closes),
+        high: Math.max(...closes),
+        label: "Range (selected interval)",
+      };
+    }
+    return {
+      low: quote?.low ?? null,
+      high: quote?.high ?? null,
+      label: "Day range",
+    };
+  }, [chartData, quote?.high, quote?.low]);
+
+  const watchlistCta = watchlistUpdating
+    ? "Saving..."
+    : watchlistChecking
+    ? "Checking..."
+    : watchlisted
+    ? "Watching"
+    : "Watch";
+
+  const toggleWatchlist = async () => {
+    if (!symbol) {
+      return;
+    }
+    if (!session?.access_token) {
+      setWatchlistError("Sign in to save this symbol.");
+      return;
+    }
+
+    setWatchlistUpdating(true);
+    setWatchlistError(null);
+    try {
+      if (watchlisted) {
+        await apiFetch(`/api/watchlist/${symbol}`, {
+          token: session.access_token,
+          method: "DELETE",
+        });
+        setWatchlisted(false);
+      } else {
+        await apiFetch("/api/watchlist", {
+          token: session.access_token,
+          method: "POST",
+          body: { symbol },
+        });
+        setWatchlisted(true);
+      }
+    } catch (err) {
+      setWatchlistError(err instanceof Error ? err.message : "Unable to update watchlist.");
+    } finally {
+      setWatchlistUpdating(false);
+    }
+  };
+
   const handleTrade = async () => {
     if (!symbol) {
       return;
@@ -850,8 +956,8 @@ export default function StockDetailPage() {
         <section className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
           <div className="flex flex-col gap-6">
             <div className="glass-panel rounded-3xl p-6">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="flex items-start gap-4">
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div className="flex flex-1 min-w-[260px] items-start gap-4">
                   {fundamentals?.logo ? (
                     <Image 
                       src={fundamentals.logo} 
@@ -889,7 +995,7 @@ export default function StockDetailPage() {
                         : rangeChangeData.change !== null && rangeChangeData.percent !== null
                         ? `${formatCurrency(rangeChangeData.change)} (${formatPercent(
                             rangeChangeData.percent
-                          )}) over selected range`
+                          )})`
                         : `${formatCurrency(quote?.change ?? 0)} (${formatPercent(
                             quote?.percentChange ?? 0
                           )})`}
@@ -914,16 +1020,42 @@ export default function StockDetailPage() {
                     ) : null}
                   </div>
                 </div>
-                <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600">
-                  <p>Day range</p>
-                  <p className="mt-2 text-sm font-semibold text-slate-900 font-mono">
-                    {loading
-                      ? "--"
-                      : `${formatCurrency(quote?.low ?? 0)} - ${formatCurrency(
-                          quote?.high ?? 0
-                        )}`}
-                  </p>
+                <div className="flex shrink-0 flex-col items-end gap-3 self-start">
+                  <button
+                    type="button"
+                    onClick={toggleWatchlist}
+                    disabled={watchlistUpdating || watchlistChecking}
+                    className={`flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      watchlisted
+                        ? "border border-teal-600 bg-teal-50 text-teal-700"
+                        : "border border-slate-200 bg-white/80 text-slate-700"
+                    } disabled:cursor-not-allowed disabled:opacity-70`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <StarIcon filled={watchlisted} />
+                      <span>{watchlistCta}</span>
+                    </span>
+                  </button>
+                  <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600">
+                    <p>{rangeStats.label}</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900 font-mono">
+                      {loading
+                        ? "--"
+                        : rangeStats.low === null || rangeStats.high === null
+                        ? "--"
+                        : `${formatCurrency(rangeStats.low)} - ${formatCurrency(rangeStats.high)}`}
+                    </p>
+                  </div>
                 </div>
+
+                {watchlistError ? (
+                  <p className="text-[11px] text-red-600 md:text-right">{watchlistError}</p>
+                ) : null}
+                {!session && !watchlistError ? (
+                  <p className="text-[11px] text-slate-500 md:text-right">
+                    Sign in to save this ticker to your watchlist.
+                  </p>
+                ) : null}
               </div>
 
               <div className="mt-6 flex flex-wrap gap-2">

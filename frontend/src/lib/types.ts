@@ -34,3 +34,21 @@ export type Snapshot = {
 };
 
 export type RangeFilter = "1D" | "1W" | "1M" | "6M" | "YTD" | "1Y" | "MAX";
+
+export type Quote = {
+  symbol: string;
+  current: number;
+  change: number;
+  percentChange: number;
+  high: number;
+  low: number;
+  open: number;
+  prevClose: number;
+  timestamp: number;
+};
+
+export type WatchlistItem = {
+  id: string;
+  symbol: string;
+  created_at: string;
+};

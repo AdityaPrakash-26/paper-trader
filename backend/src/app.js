@@ -7,6 +7,7 @@ const { config } = require('./config');
 const marketRoutes = require('./routes/market');
 const tradesRoutes = require('./routes/trades');
 const portfolioRoutes = require('./routes/portfolio');
+const watchlistRoutes = require('./routes/watchlist');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.get('/health', (req, res) => {
 app.use('/api/market', marketRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/portfolio', portfolioRoutes);
+app.use('/api/watchlist', watchlistRoutes);
 
 app.use((err, req, res, next) => {
   if (err instanceof ZodError) {
