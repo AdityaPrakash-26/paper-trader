@@ -25,10 +25,21 @@ const config = {
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   finnhubApiKey: process.env.FINNHUB_API_KEY,
+  finnhubBaseUrl: process.env.FINNHUB_BASE_URL || 'https://finnhub.io/api/v1',
+  finnhubWsUrl:
+    process.env.FINNHUB_WS_URL ||
+    (process.env.FINNHUB_API_KEY ? `wss://ws.finnhub.io?token=${process.env.FINNHUB_API_KEY}` : null),
+  twelveDataApiKey: process.env.TWELVE_DATA_API_KEY,
+  twelveDataBaseUrl: process.env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com',
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
   defaultCashBalance: parseNumber(process.env.DEFAULT_CASH_BALANCE, 100000),
   quoteCacheTtlSeconds: parseNumber(process.env.QUOTE_CACHE_TTL_SECONDS, 15),
   candleCacheTtlSeconds: parseNumber(process.env.CANDLE_CACHE_TTL_SECONDS, 300),
+  searchCacheTtlSeconds: parseNumber(process.env.SEARCH_CACHE_TTL_SECONDS, 300),
+  fundamentalsCacheTtlSeconds: parseNumber(
+    process.env.FUNDAMENTALS_CACHE_TTL_SECONDS,
+    3600
+  ),
   snapshotEveryMinutes: parseNumber(process.env.PORTFOLIO_SNAPSHOT_MINUTES, 60),
 };
 

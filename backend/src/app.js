@@ -36,6 +36,16 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: 'Invalid request.', details: err.errors });
   }
 
+  if (err?.isUpstream) {
+    const status = err.status && Number.isFinite(err.status) ? 502 : 502;
+    return res.status(status).json({ error: err.message });
+  }
+
+  const status = err?.status || err?.statusCode;
+  if (status && Number.isFinite(status) && status >= 400 && status < 500) {
+    return res.status(status).json({ error: err.message });
+  }
+
   console.error(err);
   return res.status(500).json({ error: 'Internal server error.' });
 });

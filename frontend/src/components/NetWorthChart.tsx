@@ -44,10 +44,10 @@ export default function NetWorthChart({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-            Net Worth History
+            Performance
           </p>
           <p className="text-sm text-slate-500">
-            Track your portfolio value over time.
+            Portfolio value over time.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

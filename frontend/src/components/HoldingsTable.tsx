@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import type { Holding } from "@/lib/types";
 
@@ -53,7 +54,12 @@ export default function HoldingsTable({
                 return (
                   <tr key={holding.symbol} className="border-t border-slate-100">
                     <td className="px-4 py-4 font-semibold text-slate-900">
-                      {holding.symbol}
+                      <Link
+                        href={`/stocks/${holding.symbol}`}
+                        className="transition hover:text-teal-700"
+                      >
+                        {holding.symbol}
+                      </Link>
                     </td>
                     <td className="px-4 py-4 text-slate-700 font-mono">
                       {formatNumber(holding.shares)}

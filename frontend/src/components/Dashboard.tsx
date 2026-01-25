@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabaseClient";
 import { apiFetch } from "@/lib/api";
 import type { Holding, PortfolioSummary, RangeFilter, Snapshot, Trade } from "@/lib/types";
 import NetWorthCard from "@/components/NetWorthCard";
 import NetWorthChart from "@/components/NetWorthChart";
 import HoldingsTable from "@/components/HoldingsTable";
 import TradeHistory from "@/components/TradeHistory";
-import TradeForm from "@/components/TradeForm";
+import AccountCard from "@/components/AccountCard";
+import PopularStocks from "@/components/PopularStocks";
 
 const ranges: RangeFilter[] = ["1W", "1M", "6M", "YTD", "1Y", "MAX"];
 
@@ -45,13 +45,6 @@ export default function Dashboard({ session }: { session: Session }) {
     setHoldings(data.holdings || []);
   }, [token]);
 
-  const loadHoldings = useCallback(async () => {
-    const data = await apiFetch<{ holdings: Holding[] }>("/api/portfolio/holdings", {
-      token,
-    });
-    setHoldings(data.holdings || []);
-  }, [token]);
-
   const loadTrades = useCallback(async () => {
     const data = await apiFetch<{ trades: Trade[] }>("/api/trades", { token });
     setTrades(data.trades || []);
@@ -80,6 +73,18 @@ export default function Dashboard({ session }: { session: Session }) {
     }
   }, [loadSummary, loadTrades]);
 
+  const handleCashAction = useCallback(
+    async (amount: number, action: "DEPOSIT" | "WITHDRAW") => {
+      await apiFetch("/api/portfolio/cash", {
+        token,
+        method: "POST",
+        body: { amount, action },
+      });
+      await Promise.all([loadSummary(), loadSnapshots(range)]);
+    },
+    [loadSummary, loadSnapshots, range, token]
+  );
+
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
@@ -95,27 +100,17 @@ export default function Dashboard({ session }: { session: Session }) {
   return (
     <div className="flex-1 px-6 py-10">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
-        <header className="flex flex-col gap-4 rounded-3xl border border-white/60 bg-white/70 px-6 py-6 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-                Paper Trader
-              </p>
-              <h1 className="text-3xl font-semibold text-slate-900">
-                Welcome back{userEmail ? "," : ""} {userEmail}
-              </h1>
-            </div>
-            <button
-              onClick={() => supabase.auth.signOut()}
-              className="rounded-full border border-slate-200 bg-white px-5 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
-            >
-              Sign out
-            </button>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
+              Paper Trader
+            </p>
+            <h1 className="text-3xl font-semibold text-slate-900">Portfolio</h1>
           </div>
-          <p className="text-sm text-slate-600">
-            Trade US equities with a simulated balance and real-time quotes.
-          </p>
-        </header>
+          <span className="rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-xs font-semibold text-slate-600">
+            Simulated account
+          </span>
+        </div>
 
         {error ? (
           <div className="glass-panel rounded-2xl border border-red-200 bg-red-50/80 px-6 py-4 text-sm text-red-700">
@@ -123,31 +118,29 @@ export default function Dashboard({ session }: { session: Session }) {
           </div>
         ) : null}
 
-        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <section className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
+          <NetWorthCard summary={summary} loading={loading} onCashAction={handleCashAction} />
+          <NetWorthChart
+            snapshots={snapshots}
+            range={range}
+            ranges={ranges}
+            onRangeChange={setRange}
+          />
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.65fr)]">
+          <div className="glass-panel rounded-3xl p-6">
+            <HoldingsTable holdings={holdings} loading={loading} />
+          </div>
           <div className="flex flex-col gap-6">
-            <NetWorthCard summary={summary} loading={loading} />
-            <NetWorthChart
-              snapshots={snapshots}
-              range={range}
-              ranges={ranges}
-              onRangeChange={setRange}
-            />
-          </div>
-
-          <div className="glass-panel flex flex-col gap-6 rounded-3xl p-6">
-            <TradeForm
-              token={token}
-              onTradeComplete={async () => {
-                await Promise.all([loadSummary(), loadHoldings(), loadTrades(), loadSnapshots(range)]);
-              }}
-            />
-            <TradeHistory trades={trades} />
+            <div className="glass-panel rounded-3xl p-6">
+              <TradeHistory trades={trades} />
+            </div>
+            <AccountCard email={userEmail} />
           </div>
         </section>
 
-        <section className="glass-panel rounded-3xl p-6">
-          <HoldingsTable holdings={holdings} loading={loading} />
-        </section>
+        <PopularStocks />
       </div>
     </div>
   );

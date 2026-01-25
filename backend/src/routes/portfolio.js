@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const { requireAuth } = require('../middleware/auth');
 const { ensureAccount } = require('../lib/accounts');
+const { supabaseAdmin } = require('../lib/supabase');
 const { buildPortfolioState } = require('../lib/portfolioService');
 const { getLatestSnapshot, insertSnapshot, getSnapshots } = require('../lib/portfolio');
 const { roundMoney } = require('../lib/finance');
@@ -116,6 +117,47 @@ router.get('/snapshots', requireAuth, async (req, res, next) => {
     }
 
     return res.json({ snapshots });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.post('/cash', requireAuth, async (req, res, next) => {
+  try {
+    const schema = z.object({
+      amount: z.coerce.number().positive(),
+      action: z.enum(['DEPOSIT', 'WITHDRAW']).optional(),
+    });
+
+    const { amount, action } = schema.parse(req.body);
+    const direction = action === 'WITHDRAW' ? -1 : 1;
+    const account = await ensureAccount(req.user.id);
+    const updatedCash = roundMoney(account.cash_balance + amount * direction);
+
+    if (updatedCash < 0) {
+      return res.status(400).json({ error: 'Insufficient cash balance.' });
+    }
+
+    const { error } = await supabaseAdmin
+      .from('accounts')
+      .update({ cash_balance: updatedCash })
+      .eq('user_id', req.user.id);
+
+    if (error) {
+      throw error;
+    }
+
+    const { summary } = await buildPortfolioState({
+      userId: req.user.id,
+      cashBalance: updatedCash,
+    });
+
+    await insertSnapshot(req.user.id, summary.netWorth);
+
+    return res.json({
+      cashBalance: updatedCash,
+      summary,
+    });
   } catch (err) {
     return next(err);
   }
