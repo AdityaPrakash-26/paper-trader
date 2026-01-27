@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { memo, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { formatCurrency, formatPercent } from "@/lib/format";
 
@@ -36,6 +37,100 @@ type StockHeaderProps = {
   onToggleWatchlist: () => void;
 };
 
+const StockLogo = memo(function StockLogo({
+  src,
+  alt,
+}: {
+  src?: string;
+  alt: string;
+}) {
+  const [visible, setVisible] = useState(true);
+  if (!src || !visible) return null;
+  return (
+    <Image
+      src={src}
+      alt={alt}
+      width={48}
+      height={48}
+      className="rounded-xl object-contain bg-white p-1 border border-slate-200"
+      unoptimized
+      onError={() => setVisible(false)}
+      priority
+    />
+  );
+});
+
+const RollingNumber = memo(function RollingNumber({
+  value,
+  precision = 2,
+  prefix = "$",
+}: {
+  value: number;
+  precision?: number;
+  prefix?: string;
+}) {
+  const display = useMemo(() => {
+    const formatter = new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: precision,
+      maximumFractionDigits: precision,
+    });
+    const negative = value < 0;
+    const numeric = formatter.format(Math.abs(value));
+    return `${negative ? "-" : ""}${prefix}${numeric}`;
+  }, [value, precision, prefix]);
+
+  const chars = useMemo(() => display.split(""), [display]);
+
+  return (
+    <span
+      className="inline-flex items-center gap-[1px] font-mono text-4xl font-semibold text-slate-900"
+      aria-live="polite"
+    >
+      {chars.map((char, idx) => {
+        const isDigit = /\d/.test(char);
+        if (!isDigit) {
+          return (
+            <span
+              key={`${idx}-${char}`}
+              className="inline-flex h-[1.15em] w-[0.75em] items-center justify-center leading-[1.15em] text-slate-900"
+            >
+              {char}
+            </span>
+          );
+        }
+        const digit = Number(char);
+        return (
+          <span
+            key={`col-${idx}`}
+            className="relative h-[1.15em] w-[0.75em] overflow-hidden text-center"
+            aria-hidden="true"
+          >
+            <span
+              className="absolute left-0 top-0 block w-full"
+              style={{
+                transform: `translateY(-${digit * 10}%)`,
+                transition: "transform 360ms cubic-bezier(.2,.8,.2,1)",
+                willChange: "transform",
+              }}
+            >
+              {Array.from({ length: 10 }).map((_, n) => (
+                <span
+                  key={n}
+                  className="block h-[1.15em] leading-[1.15em]"
+                  style={{ color: "#0f172a" }}
+                >
+                  {n}
+                </span>
+              ))}
+            </span>
+          </span>
+        );
+      })}
+      <span className="sr-only">{display}</span>
+    </span>
+  );
+});
+
 export function StockHeader({
   symbol,
   fundamentals,
@@ -69,19 +164,7 @@ export function StockHeader({
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
       <div className="flex flex-1 min-w-[260px] items-start gap-4">
-        {fundamentals?.logo ? (
-          <Image
-            src={fundamentals.logo}
-            alt={`${fundamentals.name || symbol} logo`}
-            width={48}
-            height={48}
-            className="rounded-xl object-contain bg-white p-1 border border-slate-200"
-            unoptimized
-            onError={(event) => {
-              event.currentTarget.style.display = "none";
-            }}
-          />
-        ) : null}
+        <StockLogo src={fundamentals?.logo} alt={`${fundamentals?.name || symbol} logo`} />
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
             {symbol}
@@ -98,7 +181,7 @@ export function StockHeader({
             )}
           </p>
           <h1 className="mt-2 text-4xl font-semibold text-slate-900 font-mono">
-            {loading ? "--" : formatCurrency(currentPrice)}
+            {loading ? "--" : <RollingNumber value={currentPrice} />}
           </h1>
           <p className={`mt-2 text-sm font-mono ${changeTone}`}>{renderChange()}</p>
           {!marketOpen && <p className="mt-1 text-xs text-slate-500">As of last close</p>}

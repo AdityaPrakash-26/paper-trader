@@ -1,6 +1,7 @@
 "use client";
 
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useMemo } from "react";
+import { Area, AreaChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCurrency } from "@/lib/format";
 import type { RangeFilter } from "@/lib/types";
 
@@ -11,6 +12,10 @@ type PriceChartCardProps = {
   ranges: RangeFilter[];
   onRangeChange: (value: RangeFilter) => void;
   chartData: PricePoint[];
+  xDomain?: [number, number] | undefined;
+  liveTimestamp?: number | null;
+  tone?: "up" | "down";
+  showMarkers?: boolean;
   candlesError: string | null;
   loading: boolean;
   yDomain: [number, number] | undefined;
@@ -22,11 +27,40 @@ export function PriceChartCard({
   ranges,
   onRangeChange,
   chartData,
+  xDomain,
+  liveTimestamp,
+  tone = "up",
+  showMarkers = true,
   candlesError,
   loading,
   yDomain,
   formatBucketLabel,
 }: PriceChartCardProps) {
+  const strokeColor = tone === "down" ? "#dc2626" : "#0f766e";
+  const fillColor = tone === "down" ? "#dc2626" : "#0f766e";
+  const ticks = useMemo(() => {
+    if (!xDomain) return undefined;
+    const [start, end] = xDomain;
+    const interval = 60 * 60 * 1000; // 1 hour
+    const values: number[] = [];
+    for (let t = start; t <= end; t += interval) {
+      values.push(t);
+    }
+    if (values[values.length - 1] !== end) {
+      values.push(end);
+    }
+    return values;
+  }, [xDomain]);
+
+  const nowMarker =
+    xDomain &&
+    liveTimestamp &&
+    liveTimestamp >= xDomain[0] &&
+    liveTimestamp <= xDomain[1]
+      ? liveTimestamp
+      : null;
+  const showMarkerLines = Boolean(showMarkers && xDomain);
+
   return (
     <div className="glass-panel rounded-3xl p-6">
       <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Price History</p>
@@ -63,15 +97,25 @@ export function PriceChartCard({
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: 28, right: 10, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#0f766e" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="#0f766e" stopOpacity={0.05} />
+                  <stop offset="0%" stopColor={fillColor} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={fillColor} stopOpacity={0.05} />
                 </linearGradient>
               </defs>
               <XAxis
                 dataKey="timestamp"
+                type="number"
+                scale="time"
+                domain={
+                  xDomain ?? (["dataMin", "dataMax"] as [
+                    number | "dataMin",
+                    number | "dataMax"
+                  ])
+                }
+                ticks={ticks}
+                allowDataOverflow
                 tickFormatter={formatBucketLabel}
                 tick={{ fill: "#64748b", fontSize: 12 }}
                 axisLine={false}
@@ -101,7 +145,48 @@ export function PriceChartCard({
                   );
                 }}
               />
-              <Area type="monotone" dataKey="close" stroke="#0f766e" strokeWidth={2} fill="url(#priceFill)" />
+              {showMarkerLines ? (
+                <ReferenceLine
+                  x={xDomain[1]}
+                  stroke="#cbd5e1"
+                  strokeDasharray="4 4"
+                  isFront={false}
+                  label={{
+                    value: "EOD",
+                    position: "top",
+                    dy: 14,
+                    dx: -12,
+                    fill: "#94a3b8",
+                    fontSize: 11,
+                  }}
+                />
+              ) : null}
+              {showMarkerLines && nowMarker ? (
+                <ReferenceLine
+                  x={nowMarker}
+                  stroke="#0f766e"
+                  strokeDasharray="3 3"
+                  isFront
+                  label={{
+                    value: "Now",
+                    position: "top",
+                    dy: 14,
+                    dx: 6,
+                    fill: strokeColor,
+                    fontSize: 11,
+                  }}
+                />
+              ) : null}
+              <Area
+                type="monotone"
+                dataKey="close"
+                stroke={strokeColor}
+                strokeWidth={2}
+                fill="url(#priceFill)"
+                isAnimationActive
+                animateNewValues
+                animationDuration={400}
+              />
             </AreaChart>
           </ResponsiveContainer>
         )}

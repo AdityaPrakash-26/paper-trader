@@ -23,7 +23,7 @@ const POINTS_BY_RANGE: Record<RangeFilter, number | null> = {
 };
 type Grouping = "intraday" | "day" | "week" | "month" | "quarter";
 
-const getEasternTimeParts = () => {
+const getEasternTimeParts = (inputDate: Date = new Date()) => {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     hour12: false,
@@ -32,24 +32,46 @@ const getEasternTimeParts = () => {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
   });
 
-  return formatter.formatToParts(new Date()).reduce<Record<string, string>>((acc, part) => {
+  return formatter.formatToParts(inputDate).reduce<Record<string, string>>((acc, part) => {
     acc[part.type] = part.value;
     return acc;
   }, {});
 };
 
-const isMarketOpenNow = () => {
-  const parts = getEasternTimeParts();
+const getEasternDateInfo = (date: Date = new Date()) => {
+  const parts = getEasternTimeParts(date);
   const year = Number(parts.year);
   const month = Number(parts.month);
   const day = Number(parts.day);
   const hour = Number(parts.hour);
   const minute = Number(parts.minute);
+  const second = Number(parts.second || "0");
+  const offsetMs = date.getTime() - Date.UTC(year, month - 1, day, hour, minute, second);
 
-  const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
-  const dayOfWeek = date.getUTCDay();
+  return { year, month, day, hour, minute, second, offsetMs };
+};
+
+const getEasternDateKey = (timestamp: number) => {
+  const { year, month, day } = getEasternDateInfo(new Date(timestamp));
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+};
+
+const getMarketSessionBounds = (date: Date = new Date()) => {
+  const { year, month, day, offsetMs } = getEasternDateInfo(date);
+  const midnightEasternUtc = Date.UTC(year, month - 1, day, 0, 0, 0) + offsetMs;
+
+  return {
+    start: midnightEasternUtc + MARKET_OPEN_MINUTES * 60 * 1000,
+    end: midnightEasternUtc + MARKET_CLOSE_MINUTES * 60 * 1000,
+  };
+};
+
+const isMarketOpenNow = () => {
+  const { year, month, day, hour, minute } = getEasternDateInfo();
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
   if (dayOfWeek === 0 || dayOfWeek === 6) {
     return false;
   }
@@ -258,6 +280,7 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
   const [session, setSession] = useState<Session | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  const [livePriceTimestamp, setLivePriceTimestamp] = useState<number | null>(null);
   const [fundamentals, setFundamentals] = useState<Fundamentals | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [fundamentalsError, setFundamentalsError] = useState<string | null>(null);
@@ -310,6 +333,11 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
   }, []);
 
   useEffect(() => {
+    setLivePrice(null);
+    setLivePriceTimestamp(null);
+  }, [symbol]);
+
+  useEffect(() => {
     if (!symbol) return;
     const loadData = async () => {
       setLoading(true);
@@ -321,6 +349,12 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
       try {
         const quoteData = await apiFetch<Quote>(`/api/market/quote?symbol=${symbol}`);
         setQuote(quoteData);
+        if (typeof quoteData.current === "number") {
+          setLivePrice(quoteData.current);
+          setLivePriceTimestamp(
+            quoteData.timestamp ? quoteData.timestamp * 1000 : Date.now()
+          );
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load quote.");
       }
@@ -425,6 +459,9 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
             const trade = data.data.find((t: { s: string }) => t.s === symbol);
             if (trade && typeof trade.p === "number") {
               setLivePrice(trade.p);
+              setLivePriceTimestamp(
+                typeof trade.t === "number" ? trade.t : Date.now()
+              );
             }
           }
         } catch {
@@ -448,6 +485,12 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
       try {
         const quoteData = await apiFetch<Quote>(`/api/market/quote?symbol=${symbol}`);
         setQuote(quoteData);
+        if (typeof quoteData.current === "number") {
+          setLivePrice(quoteData.current);
+          setLivePriceTimestamp(
+            quoteData.timestamp ? quoteData.timestamp * 1000 : Date.now()
+          );
+        }
       } catch {
         /* ignore */
       }
@@ -456,22 +499,57 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
     return () => clearInterval(interval);
   }, [symbol, wsConnected, marketOpen]);
 
-  const chartData = useMemo(() => {
-    if (!candles || candles.status !== "ok") return [];
+  const { chartData, intradayDomain } = useMemo(() => {
+    if (!candles || candles.status !== "ok") {
+      return { chartData: [] as { timestamp: number; close: number }[], intradayDomain: undefined as [number, number] | undefined };
+    }
     const grouping = getGroupingForRange(range);
     const rawPoints = candles.timestamps.map((timestamp, index) => ({
       timestamp: timestamp * 1000,
       close: candles.close[index],
     }));
-    if (rawPoints.length === 0) return [];
+    if (rawPoints.length === 0) {
+      return { chartData: [], intradayDomain: undefined };
+    }
     rawPoints.sort((a, b) => a.timestamp - b.timestamp);
 
     if (grouping === "intraday") {
       const lastPoint = rawPoints[rawPoints.length - 1];
-      const lastDateKey = new Date(lastPoint.timestamp).toISOString().slice(0, 10);
-      return rawPoints.filter(
-        (point) => new Date(point.timestamp).toISOString().slice(0, 10) === lastDateKey
+      const sessionDateKey = getEasternDateKey(lastPoint.timestamp);
+      const sessionBounds = getMarketSessionBounds(new Date(lastPoint.timestamp));
+
+      let intradayPoints = rawPoints.filter(
+        (point) =>
+          getEasternDateKey(point.timestamp) === sessionDateKey &&
+          point.timestamp >= sessionBounds.start &&
+          point.timestamp <= sessionBounds.end
       );
+
+      if (quote?.open) {
+        const firstPoint = intradayPoints[0];
+        if (!firstPoint || firstPoint.timestamp > sessionBounds.start) {
+          intradayPoints = [{ timestamp: sessionBounds.start, close: quote.open }, ...intradayPoints];
+        }
+      }
+
+      if (livePrice !== null) {
+        const liveTimestamp = livePriceTimestamp ?? Date.now();
+        const liveDateKey = getEasternDateKey(liveTimestamp);
+        if (
+          liveDateKey === sessionDateKey &&
+          liveTimestamp >= sessionBounds.start &&
+          liveTimestamp <= sessionBounds.end
+        ) {
+          const lastExisting = intradayPoints[intradayPoints.length - 1];
+          if (!lastExisting || liveTimestamp > lastExisting.timestamp) {
+            intradayPoints = [...intradayPoints, { timestamp: liveTimestamp, close: livePrice }];
+          } else if (liveTimestamp === lastExisting.timestamp) {
+            intradayPoints = [...intradayPoints.slice(0, -1), { timestamp: liveTimestamp, close: livePrice }];
+          }
+        }
+      }
+
+      return { chartData: intradayPoints, intradayDomain: [sessionBounds.start, sessionBounds.end] as [number, number] };
     }
 
     const buckets = new Map<number, { timestamp: number; close: number }>();
@@ -485,8 +563,9 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
 
     const groupedPoints = Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
     const limit = POINTS_BY_RANGE[range];
-    return limit ? groupedPoints.slice(-limit) : groupedPoints;
-  }, [candles, range]);
+    const trimmed = limit ? groupedPoints.slice(-limit) : groupedPoints;
+    return { chartData: trimmed, intradayDomain: undefined };
+  }, [candles, range, livePrice, livePriceTimestamp, quote?.open]);
 
   const yDomain = useMemo(() => {
     if (!chartData.length) return undefined;
@@ -602,7 +681,7 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
   }, [fundamentals, metrics, symbol]);
 
   const currentPrice =
-    (marketOpen ? livePrice ?? quote?.current ?? quote?.prevClose : quote?.prevClose ?? quote?.current) ?? 0;
+    (marketOpen ? livePrice ?? quote?.current ?? quote?.prevClose : quote?.current ?? quote?.prevClose) ?? 0;
   const effectiveAmountType = amountType;
   const showLive = marketOpen && wsConnected;
 
@@ -662,20 +741,25 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
   const rangeChangeData = useMemo(() => {
     if (!chartData.length) return { change: null, percent: null };
     const start = chartData[0]?.close ?? null;
-    const end = currentPrice || chartData[chartData.length - 1]?.close || null;
+    const end = marketOpen
+      ? currentPrice || chartData[chartData.length - 1]?.close || null
+      : chartData[chartData.length - 1]?.close ?? currentPrice ?? null;
     if (!start || !end || start <= 0) return { change: null, percent: null };
     const change = end - start;
     const percent = (change / start) * 100;
     return { change, percent };
-  }, [chartData, currentPrice]);
+  }, [chartData, currentPrice, marketOpen]);
 
   const rangeStats = useMemo(() => {
+    const label =
+      range === "1D" ? "Day range (market hours)" : "Range (selected interval)";
+
     if (chartData.length) {
       const closes = chartData.map((point) => point.close);
       return {
         low: Math.min(...closes),
         high: Math.max(...closes),
-        label: "Range (selected interval)",
+        label,
       };
     }
     return {
@@ -683,7 +767,7 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
       high: quote?.high ?? null,
       label: "Day range",
     };
-  }, [chartData, quote?.high, quote?.low]);
+  }, [chartData, quote?.high, quote?.low, range]);
 
   const watchlistCta = watchlistUpdating
     ? "Saving..."
@@ -794,6 +878,7 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
   };
 
   const changeTone = (rangeChangeData.change ?? quote?.change ?? 0) >= 0 ? "text-emerald-600" : "text-red-600";
+  const chartTone = (rangeChangeData.change ?? quote?.change ?? 0) >= 0 ? "up" : "down";
 
   return {
     symbol,
@@ -809,6 +894,8 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
     range,
     setRange,
     chartData,
+    xDomain: range === "1D" ? intradayDomain : undefined,
+    livePriceTimestamp,
     yDomain,
     rangeStats,
     rangeChangeData,
@@ -847,6 +934,7 @@ export function useStockPage(symbolParam: string | string[] | undefined) {
     ownedShares,
     positionValue,
     changeTone,
+    chartTone,
     currentPrice,
     showLivePrice: showLive,
     candlesError,

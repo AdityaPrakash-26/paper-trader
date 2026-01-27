@@ -26,6 +26,8 @@ export default function StockDetailPage() {
     range,
     setRange,
     chartData,
+    xDomain,
+    livePriceTimestamp,
     yDomain,
     rangeStats,
     rangeChangeData,
@@ -64,6 +66,7 @@ export default function StockDetailPage() {
     ownedShares,
     positionValue,
     changeTone,
+    chartTone,
     currentPrice,
     candlesError,
   } = useStockPage(params?.symbol);
@@ -115,6 +118,10 @@ export default function StockDetailPage() {
               ranges={ranges}
               onRangeChange={setRange}
               chartData={chartData}
+              xDomain={xDomain}
+              liveTimestamp={livePriceTimestamp}
+              tone={chartTone}
+              showMarkers={marketOpen}
               candlesError={candlesError}
               loading={loading}
               yDomain={yDomain}
